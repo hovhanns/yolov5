@@ -7,6 +7,7 @@ Usage:
 import argparse
 import sys
 import time
+from copy import deepcopy
 
 sys.path.append('./')  # to run '$ python *.py' files in subdirectories
 
@@ -17,6 +18,28 @@ import models
 from models.experimental import attempt_load
 from utils.activations import Hardswish
 from utils.general import set_logging, check_img_size
+
+from types import MethodType
+
+
+def detect_layer_inf(self, x):
+    z = []
+    for i in range(self.nl):
+        x[i] = self.m[i](x[i])
+        bs, _, ny, nx = x[i].shape
+        x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+
+        if self.grid[i].shape[2:4] != x[i].shape[2:4]:
+            self.grid[i] = self._make_grid(nx, ny).to(x[i].device)
+
+        y = x[i].sigmoid()
+        xy = (y[..., 0:2] * 2. - 0.5 + self.grid[i].to(x[i].device)) * self.stride[i]
+        y[..., 0:2] = xy  # xy
+        wh = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]
+        y[..., 2:4] = wh  # wh
+        z.append(y.view(bs, -1, self.no))
+
+    return torch.cat(z, 1)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -47,9 +70,14 @@ if __name__ == '__main__':
             m.act = Hardswish()  # assign activation
         # if isinstance(m, models.yolo.Detect):
         #     m.forward = m.forward_export  # assign forward (optional)
-    model.model[-1].export = True  # set Detect() layer export=True
-    y = model(img)  # dry run
 
+    model.model[-1].export = True  # set Detect() layer export=True
+    # detect_inf = deepcopy(model.model[-1])
+    # detect_inf.forward = MethodType(detect_layer_inf, detect_inf)
+    # model.model.add_module("25", detect_inf)
+    y = model(img)  # dry run
+    print("****************************************************************")
+    # print(y.shape)
     # TorchScript export
     try:
         print('\nStarting TorchScript export with torch %s...' % torch.__version__)
